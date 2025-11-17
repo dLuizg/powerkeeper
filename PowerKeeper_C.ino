@@ -1,12 +1,19 @@
 #include <WiFi.h>
 #include "EmonLib.h"
-#include <Firebase_ESP_Client.h>  // --- NOVO ---
+#include <Firebase_ESP_Client.h>
+#include <time.h>  // --- NOVO ---
 
 EnergyMonitor SCT013;
 
 // ---------- CONFIGURAÇÕES ----------
 const char* ssid = "Augusto";
 const char* password = "internet100";
+
+// ID fixo do dispositivo
+const int idDispositivo = 1;  // --- NOVO ---
+
+// Contador de leituras (leitura 1, leitura 2...)
+unsigned long contadorLeitura = 1;  // --- NOVO ---
 
 const int pinSCT = 35;  // Pino ADC do sensor SCT013
 #define BOTAO 14        // Botão para alternar tensão
@@ -16,38 +23,31 @@ const int pinSCT = 35;  // Pino ADC do sensor SCT013
 #define LED_110V 26
 #define LED_OFF 27
 
-// ---------- CONFIGURAÇÕES DO FIREBASE (PREENCHA AQUI) ----------
-/*
-  Instruções:
-  1. Instale a biblioteca "Firebase-ESP-Client" pelo Gerenciador de Bibliotecas.
-  2. Obtenha a URL no seu Realtime Database (Ex: https://meu-projeto-default-rtdb.firebaseio.com)
-  3. Obtenha o Segredo do Banco de Dados (Legacy) em Configurações do Projeto > Contas de Serviço.
-*/
-#define FIREBASE_HOST "https://powerkeeper-33345-default-rtdb.firebaseio.com/"  // --- NOVO --- (URL do Realtime Database)
-#define FIREBASE_AUTH "PjoVHPjmYMxYnlD6ikJY5gd75s00md1z1ISsvMit"                // --- NOVO --- (Segredo Legacy)
+// ---------- CONFIGURAÇÕES DO FIREBASE ----------
+#define FIREBASE_HOST "https://powerkeeper-33345-default-rtdb.firebaseio.com/"
+#define FIREBASE_AUTH "PjoVHPjmYMxYnlD6ikJY5gd75s00md1z1ISsvMit"
 
 // ---------- OBJETOS GLOBAIS FIREBASE ----------
-FirebaseData fbdo;      // --- NOVO --- Objeto de transação de dados
-FirebaseAuth auth;      // --- NOVO --- Objeto de autenticação
-FirebaseConfig config;  // --- NOVO --- Objeto de configuração
+FirebaseData fbdo;
+FirebaseAuth auth;
+FirebaseConfig config;
 
 // Controle de tensão simulada (110 / 220 / 0)
 int tensao = 110;
 int estadoBotaoAnterior = HIGH;
 int contadorTensao = 0;
 
-// Intervalo de leitura / exibição (ms)
+// Intervalos
 unsigned long intervaloLeitura = 1000;
 unsigned long ultimoLeitura = 0;
 
-// --- NOVO --- Intervalo de envio para o Firebase (ms)
-unsigned long intervaloFirebase = 5000;  // Envia a cada 10 segundos
+unsigned long intervaloFirebase = 5000;
 unsigned long ultimoFirebase = 0;
 
 // Medições
 double Irms = 0.0;
 
-// Controle do LED vermelho temporizado (modo OFF)
+// Controle do LED vermelho temporizado
 unsigned long tempoDesligamentoVermelho = 0;
 bool vermelhoDesligando = false;
 
@@ -55,14 +55,32 @@ bool vermelhoDesligando = false;
 void alternarTensao();
 void atualizarLEDs();
 void conectarWiFi();
-void configurarFirebase();   // --- NOVO ---
-void enviarDadosFirebase();  // --- NOVO ---
+void configurarFirebase();
+void enviarDadosFirebase();
+String gerarTimestampFormatado();  // --- NOVO ---
+
+// ---------- FUNÇÃO NOVA PARA FORMATAR TIMESTAMP ----------
+String gerarTimestampFormatado() {
+  time_t now = time(nullptr);
+  struct tm* t = localtime(&now);
+
+  char buffer[25];
+  sprintf(buffer, "%02d/%02d/%04d %02d:%02d:%02d",
+          t->tm_mday,
+          t->tm_mon + 1,
+          t->tm_year + 1900,
+          t->tm_hour,
+          t->tm_min,
+          t->tm_sec);
+
+  return String(buffer);
+}
 
 // ---------- SETUP ----------
 void setup() {
   Serial.begin(115200);
 
-  // Configura sensor SCT013
+  // Configura sensor
   SCT013.current(pinSCT, 1.45);
 
   // Botão e LEDs
@@ -72,10 +90,13 @@ void setup() {
   pinMode(LED_OFF, OUTPUT);
   atualizarLEDs();
 
-  // Conecta na rede Wi-Fi
+  // Conecta WiFi
   conectarWiFi();
 
-  // --- NOVO --- Configura e inicia o Firebase (APÓS conectar o WiFi)
+  // Ajusta relógio NTP para timestamp real
+  configTime(-3 * 3600, 0, "pool.ntp.org", "time.nist.gov");  // --- NOVO ---
+
+  // Configura Firebase
   if (WiFi.status() == WL_CONNECTED) {
     configurarFirebase();
   }
@@ -84,46 +105,40 @@ void setup() {
 // ---------- LOOP ----------
 void loop() {
   unsigned long agora = millis();
-  // --- NOVO --- Intervalo de envio para o Firebase (ms)
 
-  // Trata botão e LEDs
+  // Botão
   alternarTensao();
 
-  // Desliga o LED vermelho
+  // Desliga LED vermelho
   if (vermelhoDesligando && (agora - tempoDesligamentoVermelho >= 10000UL)) {
     digitalWrite(LED_OFF, LOW);
     vermelhoDesligando = false;
     Serial.println("LED OFF desligado após 10 segundos");
   }
 
-  // Leitura periódica do sensor
+  // Leitura do sensor
   if (agora - ultimoLeitura >= intervaloLeitura) {
     ultimoLeitura = agora;
 
-    // Lê corrente RMS
     Irms = SCT013.calcIrms(2048);
     if (Irms < 0.16) Irms = 0.0;
 
     Serial.printf("Tensao: %d V  |  Corrente (Irms): %.3f A\n", tensao, Irms);
   }
 
-  // --- NOVO --- Envio periódico para o Firebase
+  // Envio para Firebase
   if (agora - ultimoFirebase >= intervaloFirebase) {
     ultimoFirebase = agora;
 
-    // Só tenta enviar se o WiFi estiver conectado e o Firebase pronto
     if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
       enviarDadosFirebase();
     } else if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("Tentando enviar, mas WiFi esta desconectado.");
-      // Tenta reconectar se cair (opcional)
-      // WiFi.reconnect();
+      Serial.println("Tentando enviar, mas WiFi desconectado.");
     }
   }
 }
 
 // ---------- FUNÇÕES ----------
-
 void alternarTensao() {
   int estadoBotaoAtual = digitalRead(BOTAO);
 
@@ -146,7 +161,7 @@ void alternarTensao() {
     if (tensao == 0) {
       vermelhoDesligando = true;
       tempoDesligamentoVermelho = millis();
-      Serial.println("LED OFF acionado — permanecerá aceso por 10s");
+      Serial.println("LED OFF - aceso por 10s");
     } else {
       vermelhoDesligando = false;
     }
@@ -163,15 +178,9 @@ void atualizarLEDs() {
   digitalWrite(LED_OFF, LOW);
 
   switch (tensao) {
-    case 110:
-      digitalWrite(LED_110V, HIGH);
-      break;
-    case 220:
-      digitalWrite(LED_220V, HIGH);
-      break;
-    case 0:
-      digitalWrite(LED_OFF, HIGH);
-      break;
+    case 110: digitalWrite(LED_110V, HIGH); break;
+    case 220: digitalWrite(LED_220V, HIGH); break;
+    case 0:   digitalWrite(LED_OFF, HIGH); break;
   }
 }
 
@@ -191,58 +200,39 @@ void conectarWiFi() {
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println("\nFalha ao conectar WiFi (modo protótipo).");
+    Serial.println("\nFalha ao conectar (protótipo).");
   }
 }
-
-// ---------- FUNÇÕES NOVAS (FIREBASE) ----------
 
 void configurarFirebase() {
   Serial.println("Configurando Firebase...");
 
-  // Define o Host (URL do database)
   config.host = FIREBASE_HOST;
-
-  // Define a autenticação (usando o Segredo Legacy)
   config.signer.tokens.legacy_token = FIREBASE_AUTH;
 
-  // Inicia o Firebase com a configuração e autenticação
   Firebase.begin(&config, &auth);
-
-  // Helper para reconectar o WiFi automaticamente se cair
   Firebase.reconnectWiFi(true);
 
   Serial.println("Firebase iniciado.");
 }
 
-/*
-  Esta função envia os dados para o nó "/status_atual" do seu Realtime Database.
-  Ela irá SOBRESCREVER os dados antigos com os novos valores de tensão e corrente.
-*/
-/*
-  FUNÇÃO ATUALIZADA - Agora registra um histórico (log)
-*/
 void enviarDadosFirebase() {
-  // Mensagem de log um pouco diferente para clareza
   Serial.print("Registrando leitura no Firebase... ");
 
-  // É uma boa prática usar um nome de caminho que indique um log/histórico
-  String path = "/historico_leituras";
+  // Formato desejado: leitura 1, leitura 2, leitura 3...
+  String path = "/leituras/leitura " + String(contadorLeitura++);
 
   FirebaseJson json;
   json.set("tensao", tensao);
   json.set("corrente", Irms);
-  // O timestamp ".sv" é PERFEITO para um log, pois registra
-  // exatamente quando o dado chegou no servidor Firebase.
-  json.set("timestamp", ".sv");
+  json.set("idDispositivo", idDispositivo);
+  json.set("token", "synatec2025");  // Regra de segurança
+  json.set("timestamp", gerarTimestampFormatado());  // TIMESTAMP REAL
 
-  // --- MUDANÇA PRINCIPAL ---
-  // Trocamos setJSON por pushJSON.
-  // pushJSON cria um novo item com um ID único dentro de "/historico_leituras"
-  if (Firebase.RTDB.pushJSON(&fbdo, path.c_str(), &json)) {
-    Serial.println("Sucesso! Leitura registrada.");
+  if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
+    Serial.println("Sucesso!");
   } else {
-    Serial.println("Falha ao registrar.");
+    Serial.println("Falha.");
     Serial.println("Razao: " + fbdo.errorReason());
   }
 }
