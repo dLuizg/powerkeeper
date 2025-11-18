@@ -3,56 +3,46 @@
 import 'package:intl/intl.dart';
 
 class Leitura {
-  final String? firebaseDocId; 
-  final DateTime timeStamp; // <-- MUDADO: Não pode ser nulo (removed ?)
+  final String? firebaseDocId;
+  final DateTime timeStamp;
   final double corrente;
   final double tensao;
-  final int? dispositivoId; // Continua opcional (pois o database_service usa '?? 1')
+  final int dispositivoId;
 
   Leitura({
     this.firebaseDocId,
-    required this.timeStamp, // <-- MUDADO: Agora é 'required'
+    required this.timeStamp,
     required this.corrente,
     required this.tensao,
-    this.dispositivoId,
+    required this.dispositivoId,
   });
 
   factory Leitura.fromRtdb(Map<String, dynamic> data, String docId) {
-    DateTime? parsedTimestamp; // Começa nulo
-    int? parsedDispositivoId;
+    try {
+      // Pega a string de data do Firebase
+      final tsString = data['timestamp'] as String;
 
-    // --- Processamento do Timestamp ---
-    final tsData = data['timestamp'];
-    if (tsData is int) {
-      // Se for um número (Epoch)
-      parsedTimestamp = DateTime.fromMillisecondsSinceEpoch(tsData);
-    } else if (tsData is String && tsData != ".sv") { 
-      // Se for uma string (mas não ".sv")
-      try { parsedTimestamp = DateTime.parse(tsData); } catch (e) { /* ignora */ }
+      // --- CORREÇÃO DO ERRO UTC ---
+      // Adiciona um 'Z' no final para forçar o Dart a
+      // tratar esta string como UTC.
+      final tsStringUtc = tsString.endsWith('Z') ? tsString : "${tsString}Z";
+
+      return Leitura(
+        firebaseDocId: docId,
+        // Faz o parse da string com o 'Z'
+        timeStamp: DateTime.parse(tsStringUtc),
+
+        corrente: (data['corrente'] as num).toDouble(),
+        tensao: (data['tensao'] as num).toDouble(),
+
+        // --- CORREÇÃO DO NOME DO CAMPO ---
+        // Lê o campo 'dispositivo_idDispositivo' que o ESP32 envia
+        dispositivoId: data['dispositivo_idDispositivo'] as int,
+      );
+    } catch (e) {
+      print("Erro ao converter dados do Firebase: $e");
+      print("Dados recebidos: $data");
+      throw Exception('Formato de dados "Leitura" inválido: $e');
     }
-    
-    // --- A "GAMBIARRA" ESTÁ AQUI ---
-    // Se, depois de tudo, o timestamp ainda for nulo (porque era ".sv"),
-    // nós forçamos o script a usar a data/hora de AGORA.
-    parsedTimestamp ??= DateTime.now();
-    // -------------------------------
-    
-    // --- Processamento do dispositivoId ---
-    final rawDispositivoId = data['dispositivoId'];
-    if (rawDispositivoId != null && rawDispositivoId is int) {
-      parsedDispositivoId = rawDispositivoId;
-    }
-
-    // --- Puxa os 3 campos ---
-    final corrente = (data['corrente'] as num).toDouble();
-    final tensao = (data['tensao'] as num).toDouble();
-
-    return Leitura(
-      firebaseDocId: docId,
-      timeStamp: parsedTimestamp, // Agora é garantido que NUNCA será nulo
-      corrente: corrente,
-      tensao: tensao,
-      dispositivoId: parsedDispositivoId,
-    );
   }
 }

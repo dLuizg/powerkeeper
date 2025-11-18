@@ -10,6 +10,8 @@ dependencies:
   googleapis: ^14.0.0
   googleapis_auth: ^2.0.0
   http: ^1.6.0
+  tabular: ^0.2.0
+  cli_table: ^1.0.2
 
 dev_dependencies:
   lints: ^3.0.0

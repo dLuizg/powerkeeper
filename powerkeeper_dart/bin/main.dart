@@ -1,16 +1,20 @@
 // bin/main.dart
-// (Seu antigo 'gestao.dart')
 
 import 'dart:io';
-// Ajuste 'powerkeeper_sync' para o nome do seu projeto no pubspec.yaml
-import '../lib/database_service.dart';
-import '../lib/firebase_service.dart';
+
+// IMPORTAÇÃO CORRETA DO CLI_TABLE
+import 'package:tabular/tabular.dart';
+
+// IMPORTAÇÕES DO PROJETO
+import 'package:firebase_listener/database_service.dart';
+import 'package:firebase_listener/firebase_service.dart';
+import 'package:firebase_listener/models.dart';
 
 // Instâncias únicas dos nossos serviços
 final db = DatabaseService();
 final firebase = FirebaseService();
 
-// --- Funções Auxiliares de Input ---
+// ---------------------- INPUT AUXILIAR ----------------------
 
 String prompt(String message) {
   stdout.write(message);
@@ -28,22 +32,20 @@ int promptInt(String message) {
   }
 }
 
-// --- Funções de Sincronização ---
+// ---------------------- SINCRONIZAÇÃO ----------------------
 
 Future<void> syncFirebase() async {
   print("\n🔄 Iniciando sincronização do Firebase para MySQL...");
-  
+
   try {
-    // 1. Conectar ao Firebase se ainda não estiver conectado
     if (!firebase.conectado) {
       print("Conectando ao Firebase...");
       await firebase.connect();
     }
 
-    // 2. Buscar leituras não sincronizadas
     print("Buscando leituras não sincronizadas no Firebase RTDB...");
-    final leituras = await firebase.getNaoSincronizadas();
-    
+    final List<Leitura> leituras = await firebase.getNaoSincronizadas();
+
     if (leituras.isEmpty) {
       print("✅ Nenhuma leitura nova para sincronizar.");
       return;
@@ -51,7 +53,6 @@ Future<void> syncFirebase() async {
 
     print("📊 Encontradas ${leituras.length} leitura(s) para sincronizar.");
 
-    // 3. Inserir cada leitura no MySQL
     int sucesso = 0;
     int erros = 0;
 
@@ -62,23 +63,20 @@ Future<void> syncFirebase() async {
         continue;
       }
 
-      // Agora 'insertLeitura' usa os campos corretos do 'models.dart'
       final resultado = await db.insertLeitura(leitura);
-      
+
       if (resultado.contains("sucesso")) {
-        // 4. Marcar como sincronizada no Firestore
         await firebase.marcarComoSincronizada(leitura.firebaseDocId!);
         sucesso++;
         print("✅ Leitura ${leitura.firebaseDocId} sincronizada: $resultado");
       } else if (resultado.contains("aviso: Leitura já existe")) {
-        // Se já existe no MySQL, marca como 'lida' no Firebase
-        // para não buscá-la novamente.
         await firebase.marcarComoSincronizada(leitura.firebaseDocId!);
-        print("⚠️  Leitura ${leitura.firebaseDocId} já existia. Marcada como 'lida'.");
-      }
-      else {
+        print(
+            "⚠️  Leitura ${leitura.firebaseDocId} já existia. Marcada como 'lida'.");
+      } else {
         erros++;
-        print("❌ Erro ao sincronizar leitura ${leitura.firebaseDocId}: $resultado");
+        print(
+            "❌ Erro ao sincronizar leitura ${leitura.firebaseDocId}: $resultado");
       }
     }
 
@@ -86,56 +84,80 @@ Future<void> syncFirebase() async {
     print("   ✅ Sincronizadas com sucesso: $sucesso");
     print("   ❌ Erros: $erros");
     print("   📦 Total processado: ${leituras.length}");
-    
   } catch (e) {
     print("❌ ERRO FATAL durante a sincronização: $e");
   }
 }
 
-void syncMySQL() {
-  print("\nIniciando sincronização com MySQL (Leituras)...");
-  print("Buscando leituras do banco principal...");
-  sleep(Duration(seconds: 1));
-  print("... Sincronização de LEITURAS concluída.");
+// ---------------------- TABELAS (CLI TABLE) ----------------------
+
+Future<void> listarTudoMySQL() async {
+  print("\n--- 📋 Resumo Geral do Banco de Dados MySQL ---");
+
+  void printTable(List<Map<String, dynamic>> data, String title) {
+    print(title);
+
+    if (data.isEmpty) {
+      print("Nenhum dado cadastrado.");
+      return;
+    }
+
+    final headers = data.first.keys.toList();
+    final rows = data.map((map) => map.values.toList()).toList();
+
+    // Adiciona os headers como primeira linha
+    final tableData = [headers, ...rows];
+
+    // Usando a API correta do pacote tabular
+    final table = tabular(tableData);
+
+    print(table);
+  }
+
+  printTable(await db.getEmpresasForTable(), "\n--- 🏢 Empresas ---");
+  printTable(await db.getFuncionariosForTable(), "\n--- 👷 Funcionários ---");
+  printTable(await db.getLocaisForTable(), "\n--- 📍 Locais ---");
+  printTable(await db.getDispositivosForTable(), "\n--- 📱 Dispositivos ---");
+  printTable(
+      await db.getLeiturasForTable(10), "\n--- ⚡️ Últimas 10 Leituras ---");
+
+  print("\n--- Fim do Resumo ---");
+  print("Pressione Enter para continuar...");
+  stdin.readLineSync();
 }
 
 Future<void> checkConexoes() async {
   print("\n🔍 Verificando conexões...");
-  
-  // Verificar MySQL
+
   try {
-    // Tenta reconectar se não estiver conectado
-    if (!db.conectado) await db.connect();
-    await db.getEmpresas(); // Teste simples
+    await db.getEmpresas();
     print("✅ MySQL: OK (Conexão estabelecida)");
   } catch (e) {
     print("❌ MySQL: ERRO - $e");
   }
 
-  // Verificar Firebase
   try {
     if (!firebase.conectado) {
       print("⚠️  Firebase: Não conectado. Conectando...");
       await firebase.connect();
     }
-    print("✅ Firebase: OK (Conectado)");
+    print("✅ Firebase: OK (Conexão estabelecida)");
   } catch (e) {
     print("❌ Firebase: ERRO - $e");
   }
-  
+
   print("Verificação de conexões concluída.");
 }
 
-// --- Funções de Menu (Agora são 'async') ---
+// ---------------------- MENU PRINCIPAL ----------------------
 
 Future<void> main() async {
   try {
-    // 1. Conectar ao banco ANTES de mostrar o menu
     await db.connect();
   } catch (e) {
     print("ERRO FATAL: Não foi possível conectar ao banco de dados.");
     print(e);
-    return; // Encerra o app se não puder conectar
+    return;
   }
 
   bool running = true;
@@ -145,7 +167,7 @@ Future<void> main() async {
     print("2. Gerenciar Funcionários");
     print("3. Gerenciar Locais");
     print("4. Gerenciar Dispositivos");
-    print("5. Sincronizar Leituras");
+    print("5. Sincronizar / Listar");
     print("0. Sair");
 
     final choice = prompt("Escolha uma opção: ");
@@ -164,7 +186,7 @@ Future<void> main() async {
         await menuDispositivos();
         break;
       case '5':
-        await menuSincronizacao(); // Agora é async
+        await menuSincronizacao();
         break;
       case '0':
         running = false;
@@ -174,11 +196,12 @@ Future<void> main() async {
     }
   }
 
-  // 2. Fechar as conexões ao sair
   await db.close();
-  firebase.close(); // Adicionado para fechar o cliente http
+  firebase.close();
   print("Saindo...");
 }
+
+// ---------------------- MENUS AUXILIARES ----------------------
 
 Future<void> menuEmpresas() async {
   bool running = true;
@@ -200,11 +223,9 @@ Future<void> menuEmpresas() async {
       case '2':
         print("\n--- Lista de Empresas ---");
         final empresas = await db.getEmpresas();
-        if (empresas.isEmpty) {
-          print("Nenhuma empresa cadastrada.");
-        } else {
-          empresas.forEach(print);
-        }
+        empresas.isEmpty
+            ? print("Nenhuma empresa cadastrada.")
+            : empresas.forEach(print);
         break;
       case '3':
         final id = promptInt("ID da empresa a deletar: ");
@@ -232,16 +253,14 @@ Future<void> menuFuncionarios() async {
     final choice = prompt("Escolha uma opção: ");
     switch (choice) {
       case '1':
-        await _adicionarFuncionario(); // 'await' aqui
+        await _adicionarFuncionario();
         break;
       case '2':
         print("\n--- Lista de Funcionários ---");
         final funcionarios = await db.getFuncionarios();
-        if (funcionarios.isEmpty) {
-          print("Nenhum funcionário cadastrado.");
-        } else {
-          funcionarios.forEach(print);
-        }
+        funcionarios.isEmpty
+            ? print("Nenhum funcionário cadastrado.")
+            : funcionarios.forEach(print);
         break;
       case '3':
         final id = promptInt("ID do funcionário a deletar: ");
@@ -265,11 +284,10 @@ Future<void> _adicionarFuncionario() async {
     return;
   }
   empresas.forEach(print);
-  print("-----------------------------");
 
   final nome = prompt("Nome do funcionário: ");
   final email = prompt("Email: ");
-  final senha = prompt("Senha: "); // A tabela pedia 'senhaLogin'
+  final senha = prompt("Senha: ");
   final idEmpresa = promptInt("ID da Empresa do funcionário: ");
 
   final resultado = await db.addFuncionario(nome, email, senha, idEmpresa);
@@ -288,16 +306,13 @@ Future<void> menuLocais() async {
     final choice = prompt("Escolha uma opção: ");
     switch (choice) {
       case '1':
-        await _adicionarLocal(); // 'await' aqui
+        await _adicionarLocal();
         break;
       case '2':
-        print("\n--- Lista de Locais ---");
         final locais = await db.getLocais();
-        if (locais.isEmpty) {
-          print("Nenhum local cadastrado.");
-        } else {
-          locais.forEach(print);
-        }
+        locais.isEmpty
+            ? print("Nenhum local cadastrado.")
+            : locais.forEach(print);
         break;
       case '3':
         final id = promptInt("ID do local a deletar: ");
@@ -314,14 +329,12 @@ Future<void> menuLocais() async {
 }
 
 Future<void> _adicionarLocal() async {
-  print("\n--- Empresas Disponíveis ---");
   final empresas = await db.getEmpresas();
   if (empresas.isEmpty) {
     print("Nenhuma empresa cadastrada. Adicione uma empresa primeiro.");
     return;
   }
   empresas.forEach(print);
-  print("-----------------------------");
 
   final nome = prompt("Nome do local: ");
   final referencia = prompt("Referência: ");
@@ -343,16 +356,13 @@ Future<void> menuDispositivos() async {
     final choice = prompt("Escolha uma opção: ");
     switch (choice) {
       case '1':
-        await _adicionarDispositivo(); // 'await' aqui
+        await _adicionarDispositivo();
         break;
       case '2':
-        print("\n--- Lista de Dispositivos ---");
         final dispositivos = await db.getDispositivos();
-        if (dispositivos.isEmpty) {
-          print("Nenhum dispositivo cadastrado.");
-        } else {
-          dispositivos.forEach(print);
-        }
+        dispositivos.isEmpty
+            ? print("Nenhum dispositivo cadastrado.")
+            : dispositivos.forEach(print);
         break;
       case '3':
         final id = promptInt("ID do dispositivo a deletar: ");
@@ -369,14 +379,12 @@ Future<void> menuDispositivos() async {
 }
 
 Future<void> _adicionarDispositivo() async {
-  print("\n--- Locais Disponíveis ---");
   final locais = await db.getLocais();
   if (locais.isEmpty) {
     print("Nenhum local cadastrado. Adicione um local primeiro.");
     return;
   }
   locais.forEach(print);
-  print("-----------------------------");
 
   final modelo = prompt("Modelo do dispositivo: ");
   final status = prompt("Status inicial: ");
@@ -386,13 +394,13 @@ Future<void> _adicionarDispositivo() async {
   print(resultado);
 }
 
-// Menu de Sincronização
+// MENU DE SINCRONIZAÇÃO
 Future<void> menuSincronizacao() async {
   bool running = true;
   while (running) {
-    print("\n--- 🔄 Sincronizar Leituras ---");
+    print("\n--- 🔄 Sincronizar / Listar ---");
     print("1. Sincronizar Firebase → MySQL");
-    print("2. Sincronizar MySQL (Leituras)");
+    print("2. Listar Resumo do MySQL (Tabela)");
     print("3. Verificar Conexões");
     print("0. Voltar ao Menu Principal");
 
@@ -402,7 +410,7 @@ Future<void> menuSincronizacao() async {
         await syncFirebase();
         break;
       case '2':
-        syncMySQL();
+        await listarTudoMySQL();
         break;
       case '3':
         await checkConexoes();
