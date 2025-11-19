@@ -24,7 +24,7 @@ const int pinSCT = 35;  // Pino ADC do sensor SCT013
 #define LED_OFF 27
 
 // ---------- CONFIGURAÇÕES DO FIREBASE ----------
-#define FIREBASE_HOST "https://powerkeeper-33345-default-rtdb.firebaseio.com/"
+#define FIREBASE_HOST "https://powerkeeper-synatec-default-rtdb.firebaseio.com/"
 // (token removido conforme solicitado)
 //#define FIREBASE_AUTH "PjoVHPjmYMxYnlD6ikJY5gd75s00md1z1ISsvMit"
 
