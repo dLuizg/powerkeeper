@@ -4,16 +4,17 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:googleapis_auth/auth_io.dart';
-import 'models.dart'; // Nosso arquivo de modelos (Leitura)
+// Importa ambas as classes (Leitura e ConsumoDiario)
+import 'models.dart';
 
 class FirebaseService {
   http.Client? _client;
   String? _projectId;
   String? _accessToken;
 
-  // !!! VERIFIQUE SE ESTA É A URL DO SEU REALTIME DATABASE !!!
+  // !!! CORREÇÃO APLICADA AQUI: O ID DO PROJETO FOI ATUALIZADO !!!
   final String _databaseUrl =
-      'https://powerkeeper-33345-default-rtdb.firebaseio.com';
+      'https://powerkeeper-synatec-default-rtdb.firebaseio.com';
   bool _conectado = false;
 
   bool get conectado => _conectado;
@@ -50,7 +51,7 @@ class FirebaseService {
 
       print("Conectado ao Firebase Realtime Database com sucesso!");
     } catch (e) {
-      print("ERRO FATAL ao conectar ao Firebase:");
+      print("❌ ERRO FATAL ao conectar ao Firebase:");
       print("Verifique se o arquivo 'serviceAccountKey.json' está na raiz.");
       print(e);
       _client?.close();
@@ -58,60 +59,78 @@ class FirebaseService {
     }
   }
 
-  // Busca leituras no Realtime Database que ainda não foram lidas
-  Future<List<Leitura>> getNaoSincronizadas() async {
+  // ------------------------- CONSUMOS DIÁRIOS (consumos_diarios) -------------------------
+
+  /// Busca consumos diários no Realtime Database, ignorando temporariamente o filtro 'sincronizado'.
+  Future<List<ConsumoDiario>> getConsumosDiariosNaoSincronizados() async {
     if (!_conectado || _client == null || _accessToken == null) return [];
 
-    final leiturasList = <Leitura>[];
+    final consumosList = <ConsumoDiario>[];
 
-    // --- CAMINHO NO FIREBASE ---
-    // Certifique-se de que este é o nó que o seu ESP32 está usando
-    // (ex: /historico_leituras ou /leituras)
+    // Caminho para o nó de Consumos Diários
     final url =
-        Uri.parse('$_databaseUrl/historico_leituras.json?auth=$_accessToken');
+        Uri.parse('$_databaseUrl/consumos_diarios.json?auth=$_accessToken');
 
     try {
       final response = await _client!.get(url);
 
+      // --- ⚠️ CÓDIGO DE DEBUG (DIAGNÓSTICO) ⚠️ ---
+      print('URL de Requisição: $url');
+      print('Status Code da Resposta: ${response.statusCode}');
+      // Mostra o início da resposta para verificar se há dados
+      final body = response.body.length > 500
+          ? response.body.substring(0, 500) + '...'
+          : response.body;
+      print('Corpo da Resposta: $body');
+      // --- ⚠️ FIM DO CÓDIGO DE DEBUG ⚠️ ---
+
       if (response.statusCode == 200) {
+        // Se a resposta for vazia, jsonDecode(response.body) retornará null.
         final data = jsonDecode(response.body) as Map<String, dynamic>?;
 
+        // O nó 'consumos_diarios' contém sub-nós que são datas (ex: "2025-11-19")
         if (data != null) {
-          data.forEach((docId, docData) {
-            if (docData is Map<String, dynamic>) {
-              final lida = docData['lida'];
-              if (lida == null || lida == false) {
-                try {
-                  // Usa o 'models.dart' para converter os dados
-                  leiturasList.add(Leitura.fromRtdb(docData, docId));
-                } catch (e) {
-                  print(
-                      "Erro ao converter leitura $docId (formato inválido?): $e");
-                }
+          data.forEach((dataKey, dataValue) {
+            // dataKey é a chave do Firebase (a data)
+            if (dataValue is Map<String, dynamic>) {
+              final docData = dataValue;
+
+              // 🚫 FILTRO DE SINCRONIZAÇÃO AINDA REMOVIDO PARA TESTE 🚫
+              // final sincronizado = docData['sincronizado'];
+              // if (sincronizado == null || sincronizado == false) {
+
+              try {
+                // Passa a dataKey (chave do Firebase) para o fromJson.
+                consumosList.add(ConsumoDiario.fromJson(docData, dataKey));
+              } catch (e) {
+                print(
+                    "❌ Erro ao converter Consumo Diário da data $dataKey: $e");
               }
+
+              // } // FIM DO FILTRO REMOVIDO
             }
           });
         }
       } else {
-        print("Erro ao buscar leituras: Status ${response.statusCode}");
-        print("Resposta: ${response.body}");
+        print(
+            "❌ Erro ao buscar consumos diários: Status ${response.statusCode}");
       }
     } catch (e) {
-      print("Erro ao buscar leituras no Realtime Database: $e");
+      print("❌ Erro FATAL ao buscar consumos diários no Realtime Database: $e");
     }
 
-    return leiturasList;
+    print('Total de Consumos Diários encontrados: ${consumosList.length}');
+    return consumosList;
   }
 
-  // Marca uma leitura como 'lida' no Realtime Database
-  Future<void> marcarComoSincronizada(String docId) async {
+  /// Marca um Consumo Diário como 'sincronizado' no Realtime Database
+  Future<void> marcarConsumoComoSincronizado(String dataKey) async {
     if (!_conectado || _client == null || _accessToken == null) return;
 
     try {
-      // --- CAMINHO NO FIREBASE ---
-      // Deve ser o mesmo caminho da função acima
+      // Caminho: /consumos_diarios/{dataKey}/sincronizado
       final url = Uri.parse(
-          '$_databaseUrl/historico_leituras/$docId/lida.json?auth=$_accessToken');
+          '$_databaseUrl/consumos_diarios/$dataKey/sincronizado.json?auth=$_accessToken');
 
       final response = await _client!.put(
         url,
@@ -121,12 +140,14 @@ class FirebaseService {
 
       if (response.statusCode != 200) {
         print(
-            "Erro ao marcar leitura $docId como sincronizada: Status ${response.statusCode}");
+            "❌ Erro ao marcar consumo $dataKey como sincronizado: Status ${response.statusCode}");
       }
     } catch (e) {
-      print("Erro ao marcar leitura $docId como sincronizada: $e");
+      print("❌ Erro ao marcar consumo $dataKey como sincronizado: $e");
     }
   }
+
+  // ------------------------- UTILITÁRIO -------------------------
 
   // Fecha o cliente HTTP ao sair do app
   void close() {

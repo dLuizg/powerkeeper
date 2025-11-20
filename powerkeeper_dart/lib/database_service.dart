@@ -1,7 +1,7 @@
 // lib/database_service.dart
 
 import 'package:mysql1/mysql1.dart';
-import 'models.dart'; // Importa nossa classe 'Leitura'
+import 'models.dart';
 import 'dart:io';
 
 class DatabaseService {
@@ -10,7 +10,9 @@ class DatabaseService {
 
   bool get conectado => _conectado;
 
-  // --- CONFIGURE AQUI SEU BANCO MYSQL ---
+  // -----------------------------
+  // CONFIGURAÇÃO DO MYSQL
+  // -----------------------------
   final _settings = ConnectionSettings(
     host: 'localhost',
     port: 3306,
@@ -18,34 +20,34 @@ class DatabaseService {
     password: '296q',
     db: 'powerkeeper',
   );
-  // ----------------------------------------
 
+  // -----------------------------
+  // CONECTAR
+  // -----------------------------
   Future<void> connect() async {
     await _conn?.close().catchError((_) {});
-
     try {
       _conn = await MySqlConnection.connect(_settings);
       _conectado = true;
-      print("Conectado ao MySQL (DatabaseService) com sucesso!");
+      print("🔌 Conectado ao MySQL com sucesso!");
     } catch (e) {
-      print("ERRO FATAL ao conectar ao MySQL:");
+      print("❌ ERRO ao conectar ao MySQL:");
       print(e);
-      _conectado = false;
       exit(1);
     }
   }
 
-  /// Verifica se a conexão está viva e reconecta se necessário.
+  // Garante que a conexão sempre está ativa
   Future<MySqlConnection> _getValidConnection() async {
     if (_conn == null || !_conectado) {
-      print('🔌 Conexão MySQL não iniciada. Conectando...');
+      print("Reconectando ao MySQL...");
       await connect();
-    }
-    try {
-      await _conn!.query('SELECT 1');
-    } catch (e) {
-      print('⚠️ Conexão MySQL perdida. Reconectando...');
-      await connect();
+    } else {
+      try {
+        await _conn!.query('SELECT 1');
+      } catch (_) {
+        await connect();
+      }
     }
     return _conn!;
   }
@@ -53,248 +55,294 @@ class DatabaseService {
   Future<void> close() async {
     await _conn?.close();
     _conectado = false;
-    print("Conexão MySQL fechada.");
+    print("🔌 Conexão MySQL fechada.");
   }
 
-  // --- FUNÇÕES DE SINCRONIZAÇÃO (Firebase -> MySQL) ---
+  // -----------------------------
+  // HELPERS
+  // -----------------------------
+  int _asInt(dynamic v) {
+    if (v == null) return 0;
+    if (v is int) return v;
+    return int.tryParse(v.toString()) ?? 0;
+  }
 
+  double _asDouble(dynamic v) {
+    if (v == null) return 0.0;
+    if (v is double) return v;
+    if (v is int) return v.toDouble();
+    return double.tryParse(v.toString()) ?? 0.0;
+  }
+
+  // -----------------------------
+  // INSERT LEITURA
+  // -----------------------------
   Future<String> insertLeitura(Leitura leitura) async {
     final conn = await _getValidConnection();
-
-    // Usa transação para garantir o COMMIT (salvar)
     try {
-      await conn.transaction((txn) async {
-        final sql = '''
-        INSERT INTO leitura 
-          (timeStamp, corrente, tensao, dispositivo_idDispositivo)
-        VALUES (?, ?, ?, ?);
-      ''';
-        final params = [
-          leitura.timeStamp,
-          leitura.corrente,
-          leitura.tensao,
-          leitura.dispositivoId,
-        ];
-        await txn.query(sql, params);
-      });
-
+      final result = await conn.query('''
+        INSERT INTO leitura (timeStamp, corrente, tensao, dispositivo_idDispositivo)
+        VALUES (?, ?, ?, ?)
+      ''', [
+        leitura.timeStamp.toUtc(),
+        leitura.corrente,
+        leitura.tensao,
+        leitura.dispositivoId
+      ]);
+      print("Rows inseridas em leitura: ${result.affectedRows}");
       return "sucesso";
-    } on MySqlException catch (e) {
-      if (e.errorNumber == 1452) {
-        print(
-            "Erro FK: Dispositivo com ID ${leitura.dispositivoId} (do ESP32) não existe no MySQL. Leitura ${leitura.firebaseDocId} falhou.");
-        return "Erro FK: O dispositivoId ${leitura.dispositivoId} não existe na tabela 'dispositivo'.";
-      }
-      print("Erro MySQL ao inserir leitura ${leitura.firebaseDocId}: $e");
-      return "Erro MySQL: ${e.message}";
     } catch (e) {
-      print("Erro inesperado ao inserir leitura ${leitura.firebaseDocId}: $e");
-      return "Erro inesperado: $e";
+      return "Erro ao inserir leitura: $e";
     }
   }
 
-  // --- FUNÇÕES DE LEITURA (Usadas pelo menu antigo) ---
-  // (Deixamos aqui caso precise)
-  Future<List<String>> getLeiturasRecentes(int limite) async {
+  // -----------------------------
+  // INSERT CONSUMO DIÁRIO
+  // -----------------------------
+  Future<String> insertConsumoDiario(ConsumoDiario c) async {
     final conn = await _getValidConnection();
-    final leiturasList = <String>[];
     try {
-      final results = await conn.query('''
-            SELECT l.*, d.modelo as nomeDispositivo 
-            FROM leitura l
-            LEFT JOIN dispositivo d ON l.dispositivo_idDispositivo = d.idDispositivo
-            ORDER BY l.timeStamp DESC 
-            LIMIT ?
-          ''', [limite]);
-
-      for (final row in results) {
-        String ts = (row['timeStamp'] as DateTime)
-            .toLocal()
-            .toString()
-            .substring(0, 19);
-        final dispositivo =
-            row['nomeDispositivo'] ?? 'ID ${row['dispositivo_idDispositivo']}';
-        leiturasList.add(
-            "ID: ${row['idLeitura']}, TS: $ts, A: ${row['corrente']}, V: ${row['tensao']}, Disp: $dispositivo");
-      }
+      final result = await conn.query('''
+        INSERT INTO consumoDiario (timeStamp, consumoKWh, dispositivo_idDispositivo)
+        VALUES (?, ?, ?)
+      ''', [
+        c.timeStamp.toUtc(),
+        c.consumoKwh,
+        c.dispositivoId,
+      ]);
+      print("Rows inseridas em consumoDiario: ${result.affectedRows}");
+      return "sucesso";
     } catch (e) {
-      leiturasList.add("Erro ao buscar leituras: $e");
+      return "Erro ao inserir consumo diário: $e";
     }
-    return leiturasList;
   }
 
-  // --- FUNÇÕES DE EMPRESA ---
-
-  Future<void> addEmpresa(String nome, String cnpj) async {
-    final conn = await _getValidConnection();
-    await conn
-        .query('INSERT INTO empresa (nome, cnpj) VALUES (?, ?)', [nome, cnpj]);
+  // ============================================================
+  // CRUD EMPRESA
+  // ============================================================
+  Future<String> addEmpresa(String nome, String cnpj) async {
+    try {
+      final conn = await _getValidConnection();
+      final result = await conn.query(
+          'INSERT INTO empresa (nome, cnpj) VALUES (?, ?)', [nome, cnpj]);
+      print("Rows inseridas em empresa: ${result.affectedRows}");
+      return "ok";
+    } catch (e) {
+      return "Erro ao inserir empresa: $e";
+    }
   }
 
-  Future<List<String>> getEmpresas() async {
+  Future<List<Map<String, dynamic>>> getEmpresas() async {
     final conn = await _getValidConnection();
-    final results = await conn.query('SELECT * FROM empresa');
-    return results
-        .map((row) =>
-            "ID: ${row['idEmpresa']}, Nome: ${row['nome']}, CNPJ: ${row['cnpj']}")
+    final r = await conn.query("SELECT * FROM empresa ORDER BY idEmpresa DESC");
+
+    return r
+        .map((row) => {
+              'idEmpresa': _asInt(row['idEmpresa']),
+              'nome': row['nome'],
+              'cnpj': row['cnpj'],
+            })
         .toList();
   }
 
-  Future<void> deleteEmpresa(int id) async {
-    final conn = await _getValidConnection();
-    await conn.query('DELETE FROM empresa WHERE idEmpresa = ?', [id]);
+  Future<String> deleteEmpresa(int id) async {
+    try {
+      final conn = await _getValidConnection();
+      final result =
+          await conn.query('DELETE FROM empresa WHERE idEmpresa=?', [id]);
+      print("Rows deletadas em empresa: ${result.affectedRows}");
+      return "ok";
+    } catch (e) {
+      return "Erro ao deletar empresa: $e";
+    }
   }
 
-  // --- FUNÇÕES DE FUNCIONÁRIO ---
-
+  // ============================================================
+  // CRUD FUNCIONÁRIO
+  // ============================================================
   Future<String> addFuncionario(
       String nome, String email, String senha, int idEmpresa) async {
     try {
       final conn = await _getValidConnection();
-      await conn.query(
-          'INSERT INTO funcionario (nome, email, senhaLogin, empresa_idEmpresa) VALUES (?, ?, ?, ?)',
-          [nome, email, senha, idEmpresa]);
-      return "Funcionário adicionado com sucesso.";
-    } on MySqlException catch (e) {
-      if (e.errorNumber == 1452) {
-        return "Erro: Empresa com ID $idEmpresa não existe.";
-      }
-      return "Erro MySQL: ${e.message}";
+      final result = await conn.query('''
+        INSERT INTO funcionario (nome, email, senhaLogin, empresa_idEmpresa)
+        VALUES (?, ?, ?, ?)
+      ''', [nome, email, senha, idEmpresa]);
+      print("Rows inseridas em funcionario: ${result.affectedRows}");
+      return 'ok';
+    } catch (e) {
+      return 'Erro: $e';
     }
   }
 
-  Future<List<String>> getFuncionarios() async {
+  Future<List<Map<String, dynamic>>> getFuncionarios() async {
     final conn = await _getValidConnection();
-    final results = await conn.query(
-        'SELECT f.*, e.nome as nomeEmpresa FROM funcionario f JOIN empresa e ON f.empresa_idEmpresa = e.idEmpresa');
-    return results
-        .map((row) =>
-            "ID: ${row['idFuncionario']}, Nome: ${row['nome']}, Email: ${row['email']}, Empresa: ${row['nomeEmpresa']}")
+    final r = await conn.query('''
+      SELECT funcionario.idFuncionario, funcionario.nome, funcionario.email, empresa.nome AS empresa
+      FROM funcionario
+      JOIN empresa ON empresa.idEmpresa = funcionario.empresa_idEmpresa
+      ORDER BY funcionario.idFuncionario DESC
+    ''');
+    return r
+        .map((row) => {
+              'idFuncionario': _asInt(row['idFuncionario']),
+              'nome': row['nome'],
+              'email': row['email'],
+              'empresa': row['empresa'],
+            })
         .toList();
   }
 
-  Future<void> deleteFuncionario(int id) async {
-    final conn = await _getValidConnection();
-    await conn.query('DELETE FROM funcionario WHERE idFuncionario = ?', [id]);
-  }
-
-  // --- FUNÇÕES DE LOCAL ---
-
-  Future<String> addLocal(String nome, String referencia, int idEmpresa) async {
+  Future<String> deleteFuncionario(int id) async {
     try {
       final conn = await _getValidConnection();
-      await conn.query(
-          'INSERT INTO local (nome, referencia, empresa_idEmpresa) VALUES (?, ?, ?)',
-          [nome, referencia, idEmpresa]);
-      return "Local adicionado com sucesso.";
-    } on MySqlException catch (e) {
-      if (e.errorNumber == 1452) {
-        return "Erro: Empresa com ID $idEmpresa não existe.";
-      }
-      return "Erro MySQL: ${e.message}";
+      final result = await conn
+          .query('DELETE FROM funcionario WHERE idFuncionario = ?', [id]);
+      print("Rows deletadas em funcionario: ${result.affectedRows}");
+      return "ok";
+    } catch (e) {
+      return "Erro ao deletar funcionario: $e";
     }
   }
 
-  Future<List<String>> getLocais() async {
+  // ============================================================
+  // CRUD LOCAL
+  // ============================================================
+  Future<String> addLocal(String nome, String ref, int idEmpresa) async {
+    try {
+      final conn = await _getValidConnection();
+      final result = await conn.query('''
+        INSERT INTO local (nome, referencia, empresa_idEmpresa)
+        VALUES (?, ?, ?)
+      ''', [nome, ref, idEmpresa]);
+      print("Rows inseridas em local: ${result.affectedRows}");
+      return "ok";
+    } catch (e) {
+      return "Erro ao inserir local: $e";
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getLocais() async {
     final conn = await _getValidConnection();
-    final results = await conn.query(
-        'SELECT l.*, e.nome as nomeEmpresa FROM local l JOIN empresa e ON l.empresa_idEmpresa = e.idEmpresa');
-    return results
-        .map((row) =>
-            "ID: ${row['idLocal']}, Nome: ${row['nome']}, Ref: ${row['referencia']}, Empresa: ${row['nomeEmpresa']}")
+    final r = await conn.query('''
+      SELECT local.idLocal, local.nome, local.referencia, empresa.nome AS empresa
+      FROM local
+      JOIN empresa ON local.empresa_idEmpresa = empresa.idEmpresa
+      ORDER BY local.idLocal DESC
+    ''');
+    return r
+        .map((row) => {
+              'idLocal': _asInt(row['idLocal']),
+              'nome': row['nome'],
+              'referencia': row['referencia'],
+              'empresa': row['empresa'],
+            })
         .toList();
   }
 
-  Future<void> deleteLocal(int id) async {
-    final conn = await _getValidConnection();
-    await conn.query('DELETE FROM local WHERE idLocal = ?', [id]);
+  Future<String> deleteLocal(int id) async {
+    try {
+      final conn = await _getValidConnection();
+      final result =
+          await conn.query("DELETE FROM local WHERE idLocal=?", [id]);
+      print("Rows deletadas em local: ${result.affectedRows}");
+      return "ok";
+    } catch (e) {
+      return "Erro ao deletar local: $e";
+    }
   }
 
-  // --- FUNÇÕES DE DISPOSITIVO ---
-
+  // ============================================================
+  // CRUD DISPOSITIVO
+  // ============================================================
   Future<String> addDispositivo(
       String modelo, String status, int idLocal) async {
     try {
       final conn = await _getValidConnection();
-      await conn.query(
-          'INSERT INTO dispositivo (modelo, status, local_idLocal) VALUES (?, ?, ?)',
-          [modelo, status, idLocal]);
-      return "Dispositivo adicionado com sucesso.";
-    } on MySqlException catch (e) {
-      if (e.errorNumber == 1452) {
-        return "Erro: Local com ID $idLocal não existe.";
-      }
-      return "Erro MySQL: ${e.message}";
+      final result = await conn.query('''
+        INSERT INTO dispositivo (modelo, status, local_idLocal)
+        VALUES (?, ?, ?)
+      ''', [modelo, status, idLocal]);
+      print("Rows inseridas em dispositivo: ${result.affectedRows}");
+      return "ok";
+    } catch (e) {
+      return "Erro: $e";
     }
   }
 
-  Future<List<String>> getDispositivos() async {
+  Future<List<Map<String, dynamic>>> getDispositivos() async {
     final conn = await _getValidConnection();
-    final results = await conn.query(
-        'SELECT d.*, l.nome as nomeLocal FROM dispositivo d JOIN local l ON d.local_idLocal = l.idLocal');
-    return results
-        .map((row) =>
-            "ID: ${row['idDispositivo']}, Modelo: ${row['modelo']}, Status: ${row['status']}, Local: ${row['nomeLocal']}")
+    final r = await conn.query('''
+      SELECT dispositivo.idDispositivo, dispositivo.modelo, dispositivo.status,
+             local.nome AS local, empresa.nome AS empresa
+      FROM dispositivo
+      JOIN local ON dispositivo.local_idLocal = local.idLocal
+      JOIN empresa ON local.empresa_idEmpresa = empresa.idEmpresa
+      ORDER BY dispositivo.idDispositivo DESC
+    ''');
+    return r
+        .map((row) => {
+              'idDispositivo': _asInt(row['idDispositivo']),
+              'modelo': row['modelo'],
+              'status': row['status'],
+              'local': row['local'],
+              'empresa': row['empresa'],
+            })
         .toList();
   }
 
-  Future<void> deleteDispositivo(int id) async {
-    final conn = await _getValidConnection();
-    await conn.query('DELETE FROM dispositivo WHERE idDispositivo = ?', [id]);
+  Future<String> deleteDispositivo(int id) async {
+    try {
+      final conn = await _getValidConnection();
+      final result = await conn
+          .query("DELETE FROM dispositivo WHERE idDispositivo=?", [id]);
+      print("Rows deletadas em dispositivo: ${result.affectedRows}");
+      return "ok";
+    } catch (e) {
+      return "Erro ao deletar dispositivo: $e";
+    }
   }
 
-  // --- FUNÇÕES NOVAS PARA A TABELA PROFISSIONAL ---
-
-  Future<List<Map<String, dynamic>>> getEmpresasForTable() async {
-    final conn = await _getValidConnection();
-    final results =
-        await conn.query('SELECT idEmpresa, nome, cnpj FROM empresa');
-    return results.map((row) => row.fields).toList();
+  // ============================================================
+  // LISTAGENS FORMATADAS PARA MENU
+  // ============================================================
+  Future<void> listarEmpresas() async {
+    final dados = await getEmpresas();
+    print("\n📊 EMPRESAS:");
+    print("=" * 50);
+    for (var e in dados) {
+      print(
+          "ID: ${e['idEmpresa']}  |  Nome: ${e['nome']}  |  CNPJ: ${e['cnpj']}");
+    }
   }
 
-  Future<List<Map<String, dynamic>>> getFuncionariosForTable() async {
-    final conn = await _getValidConnection();
-    final results = await conn.query(
-        'SELECT f.idFuncionario, f.nome, f.email, e.nome as empresa FROM funcionario f JOIN empresa e ON f.empresa_idEmpresa = e.idEmpresa');
-    return results.map((row) => row.fields).toList();
+  Future<void> listarFuncionarios() async {
+    final dados = await getFuncionarios();
+    print("\n👥 FUNCIONÁRIOS:");
+    print("=" * 50);
+    for (var f in dados) {
+      print(
+          "${f['idFuncionario']} | ${f['nome']} | ${f['email']} | Empresa: ${f['empresa']}");
+    }
   }
 
-  Future<List<Map<String, dynamic>>> getLocaisForTable() async {
-    final conn = await _getValidConnection();
-    final results = await conn.query(
-        'SELECT l.idLocal, l.nome, l.referencia, e.nome as empresa FROM local l JOIN empresa e ON l.empresa_idEmpresa = e.idEmpresa');
-    return results.map((row) => row.fields).toList();
+  Future<void> listarLocais() async {
+    final dados = await getLocais();
+    print("\n🏢 LOCAIS:");
+    print("=" * 50);
+    for (var l in dados) {
+      print(
+          "${l['idLocal']} | ${l['nome']} | ${l['referencia']} | Empresa: ${l['empresa']}");
+    }
   }
 
-  Future<List<Map<String, dynamic>>> getDispositivosForTable() async {
-    final conn = await _getValidConnection();
-    final results = await conn.query(
-        'SELECT d.idDispositivo, d.modelo, d.status, l.nome as local FROM dispositivo d JOIN local l ON d.local_idLocal = l.idLocal');
-    return results.map((row) => row.fields).toList();
-  }
-
-  Future<List<Map<String, dynamic>>> getLeiturasForTable(int limite) async {
-    final conn = await _getValidConnection();
-    final results = await conn.query('''
-          SELECT 
-            l.idLeitura, 
-            DATE_FORMAT(CONVERT_TZ(l.timeStamp, '+00:00', 'SYSTEM'), '%Y-%m-%d %H:%i:%s') as timeStamp, 
-            l.corrente, 
-            l.tensao, 
-            d.modelo as dispositivo
-          FROM leitura l
-          LEFT JOIN dispositivo d ON l.dispositivo_idDispositivo = d.idDispositivo
-          ORDER BY l.idLeitura DESC 
-          LIMIT ?
-        ''', [limite]);
-    // Converte os resultados para Mapas
-    return results.map((row) {
-      // Converte campos 'double' que vêm como 'String'
-      var fields = row.fields;
-      fields['corrente'] =
-          double.tryParse(fields['corrente'].toString()) ?? 0.0;
-      fields['tensao'] = double.tryParse(fields['tensao'].toString()) ?? 0.0;
-      return fields;
-    }).toList();
+  Future<void> listarDispositivos() async {
+    final dados = await getDispositivos();
+    print("\n🔌 DISPOSITIVOS:");
+    print("=" * 50);
+    for (var d in dados) {
+      print(
+          "${d['idDispositivo']} | ${d['modelo']} | Status: ${d['status']} | Local: ${d['local']} | Empresa: ${d['empresa']}");
+    }
   }
 }

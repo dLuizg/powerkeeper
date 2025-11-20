@@ -1,21 +1,15 @@
-// bin/main.dart
-
+// main.dart
 import 'dart:io';
-
-// IMPORTAÇÃO CORRETA DO CLI_TABLE
 import 'package:tabular/tabular.dart';
-
-// IMPORTAÇÕES DO PROJETO
 import 'package:firebase_listener/database_service.dart';
 import 'package:firebase_listener/firebase_service.dart';
 import 'package:firebase_listener/models.dart';
 
-// Instâncias únicas dos nossos serviços
+// Instâncias únicas dos serviços
 final db = DatabaseService();
 final firebase = FirebaseService();
 
 // ---------------------- INPUT AUXILIAR ----------------------
-
 String prompt(String message) {
   stdout.write(message);
   return stdin.readLineSync() ?? '';
@@ -27,152 +21,389 @@ int promptInt(String message) {
       final input = prompt(message);
       return int.parse(input);
     } catch (e) {
-      print("Entrada inválida. Por favor, digite um número.");
+      print("Entrada inválida. Digite um número.");
     }
   }
 }
 
-// ---------------------- SINCRONIZAÇÃO ----------------------
+Future<void> sincronizarTudo() async {
+  print("\n🔄 Sincronizando TUDO antes de abrir o menu...");
 
-Future<void> syncFirebase() async {
-  print("\n🔄 Iniciando sincronização do Firebase para MySQL...");
+  // Consumos diários
+  await syncConsumosDiariosOnly();
+
+  // Aqui você pode adicionar outras sincronizações
+  // await syncOutroTipoDeDados();
+
+  print("✅ Sincronização completa!\n");
+}
+
+// ---------------------- SINCRONIZAÇÃO ----------------------
+Future<void> menuSincronizacao() async {
+  bool running = true;
+
+  while (running) {
+    print("\n--- 🔄 Menu de Sincronização ---");
+    print("1. Sincronizar Consumos Diários");
+    print("2. Sincronizar Tudo");
+    print("0. Voltar");
+
+    final op = prompt("Escolha: ");
+
+    switch (op) {
+      case '1':
+        await syncConsumosDiariosOnly();
+        break;
+      case '2':
+        print("🔧 Função 'sincronizar tudo' ainda não implementada.");
+        break;
+      case '0':
+        running = false;
+        break;
+      default:
+        print("Opção inválida.");
+    }
+  }
+}
+
+Future<void> syncConsumosDiariosOnly() async {
+  print("\n🔄 Sincronizando APENAS Consumos Diários...");
 
   try {
     if (!firebase.conectado) {
       print("Conectando ao Firebase...");
       await firebase.connect();
     }
-
-    print("Buscando leituras não sincronizadas no Firebase RTDB...");
-    final List<Leitura> leituras = await firebase.getNaoSincronizadas();
-
-    if (leituras.isEmpty) {
-      print("✅ Nenhuma leitura nova para sincronizar.");
-      return;
-    }
-
-    print("📊 Encontradas ${leituras.length} leitura(s) para sincronizar.");
-
-    int sucesso = 0;
-    int erros = 0;
-
-    for (final leitura in leituras) {
-      if (leitura.firebaseDocId == null) {
-        print("⚠️  Leitura sem ID do Firebase, pulando...");
-        erros++;
-        continue;
-      }
-
-      final resultado = await db.insertLeitura(leitura);
-
-      if (resultado.contains("sucesso")) {
-        await firebase.marcarComoSincronizada(leitura.firebaseDocId!);
-        sucesso++;
-        print("✅ Leitura ${leitura.firebaseDocId} sincronizada: $resultado");
-      } else if (resultado.contains("aviso: Leitura já existe")) {
-        await firebase.marcarComoSincronizada(leitura.firebaseDocId!);
-        print(
-            "⚠️  Leitura ${leitura.firebaseDocId} já existia. Marcada como 'lida'.");
-      } else {
-        erros++;
-        print(
-            "❌ Erro ao sincronizar leitura ${leitura.firebaseDocId}: $resultado");
-      }
-    }
-
-    print("\n📈 Resumo da sincronização:");
-    print("   ✅ Sincronizadas com sucesso: $sucesso");
-    print("   ❌ Erros: $erros");
-    print("   📦 Total processado: ${leituras.length}");
   } catch (e) {
-    print("❌ ERRO FATAL durante a sincronização: $e");
+    print("❌ Erro ao conectar ao Firebase.");
+    return;
+  }
+
+  await _syncConsumosDiarios();
+}
+
+Future<void> _syncConsumosDiarios() async {
+  // Mensagem inicial simples
+  print("🔄 Sincronizando Consumos Diários...");
+
+  final List<ConsumoDiario> consumos =
+      await firebase.getConsumosDiariosNaoSincronizados();
+
+  if (consumos.isEmpty) {
+    print("Nenhum consumo novo encontrado.\n");
+    return;
+  }
+
+  print("Total de registros a sincronizar: ${consumos.length}\n");
+
+  int sucesso = 0;
+  int erros = 0;
+  int avisos = 0;
+
+  for (final consumo in consumos) {
+    if (consumo.firebaseKey.isEmpty) {
+      // Aviso limpo
+      print("⚠ Registro sem chave, ignorado.");
+      erros++;
+      continue;
+    }
+
+    final resultado = await db.insertConsumoDiario(consumo);
+
+    if (resultado.contains("sucesso")) {
+      await firebase.marcarConsumoComoSincronizado(consumo.firebaseKey);
+      sucesso++;
+    } else if (resultado.contains("Duplicate entry")) {
+      // Mensagem amigável para duplicatas
+      print("⚠ Registro já existe: Dispositivo ${consumo.dispositivoId} - ${consumo.timeStamp}");
+      avisos++;
+    } else if (resultado.startsWith("aviso:")) {
+      print("⚠ Aviso: $resultado");
+      avisos++;
+    } else {
+      erros++;
+      print("❌ Falha ao inserir: Dispositivo ${consumo.dispositivoId} - ${consumo.timeStamp}");
+    }
+  }
+
+  // Resumo final limpo
+  print("\n📊 Resumo da sincronização:");
+  print("✔ Inseridos com sucesso: $sucesso");
+  print("⚠ Ignorados/avisos: $avisos");
+  print("❌ Falhas: $erros\n");
+}
+
+
+// ---------------------- LISTAGEM (CLI TABLE) ----------------------
+Future<void> listarTabelaCLI(
+    List<Map<String, dynamic>> data, String titulo) async {
+  print("\n$titulo");
+
+  if (data.isEmpty) {
+    print("Nenhum registro encontrado.");
+    return;
+  }
+
+  final headers = data.first.keys.toList();
+  // Tratamento de valores nulos
+  final rows = data
+      .map((e) => e.values.map((v) => v == null ? '' : v.toString()).toList())
+      .toList();
+
+  final tabela = tabular([headers, ...rows]);
+  print(tabela);
+}
+
+// ---------------------- MENUS ----------------------
+Future<void> menuEmpresas() async {
+  bool running = true;
+
+  while (running) {
+    print("\n--- 🏢 Empresas ---");
+    print("1. Adicionar");
+    print("2. Listar");
+    print("3. Deletar");
+    print("0. Voltar");
+
+    final op = prompt("Escolha: ");
+
+    switch (op) {
+      case '1':
+        final nome = prompt("Nome: ");
+        final cnpj = prompt("CNPJ: ");
+        await db.addEmpresa(nome, cnpj);
+        print("✅ Empresa adicionada.");
+        // Só lista automaticamente após adicionar
+        final empresasAtualizadas = await db.getEmpresas();
+        if (empresasAtualizadas.isNotEmpty) {
+          await listarTabelaCLI(empresasAtualizadas, "📋 Empresas");
+        }
+        break;
+
+      case '2':
+        // Chamada manual para listar
+        final empresas = await db.getEmpresas();
+        if (empresas.isEmpty) {
+          print("Nenhuma empresa cadastrada.");
+        } else {
+          await listarTabelaCLI(empresas, "📋 Empresas");
+        }
+        break;
+
+      case '3':
+        final id = promptInt("ID: ");
+        await db.deleteEmpresa(id);
+        print("✅ Empresa deletada.");
+        // Opcional: listar apenas se existir alguma
+        final empresas = await db.getEmpresas();
+        if (empresas.isNotEmpty) {
+          await listarTabelaCLI(empresas, "📋 Empresas");
+        }
+        break;
+
+      case '0':
+        running = false;
+        break;
+
+      default:
+        print("Opção inválida.");
+    }
   }
 }
 
-// ---------------------- TABELAS (CLI TABLE) ----------------------
+Future<void> menuFuncionarios() async {
+  bool running = true;
 
-Future<void> listarTudoMySQL() async {
-  print("\n--- 📋 Resumo Geral do Banco de Dados MySQL ---");
+  while (running) {
+    print("\n--- 👷 Funcionários ---");
+    print("1. Adicionar");
+    print("2. Listar");
+    print("3. Deletar");
+    print("0. Voltar");
 
-  void printTable(List<Map<String, dynamic>> data, String title) {
-    print(title);
+    final op = prompt("Escolha: ");
 
-    if (data.isEmpty) {
-      print("Nenhum dado cadastrado.");
-      return;
+    switch (op) {
+      case '1':
+        await adicionarFuncionario();
+        break;
+
+      case '2':
+        await listarTabelaCLI(await db.getFuncionarios(), "📋 Funcionários");
+        break;
+
+      case '3':
+        final id = promptInt("ID: ");
+        await db.deleteFuncionario(id);
+        print("Funcionário deletado.");
+        await listarTabelaCLI(await db.getFuncionarios(), "📋 Funcionários");
+        break;
+
+      case '0':
+        running = false;
+        break;
+
+      default:
+        print("Opção inválida.");
     }
-
-    final headers = data.first.keys.toList();
-    final rows = data.map((map) => map.values.toList()).toList();
-
-    // Adiciona os headers como primeira linha
-    final tableData = [headers, ...rows];
-
-    // Usando a API correta do pacote tabular
-    final table = tabular(tableData);
-
-    print(table);
   }
-
-  printTable(await db.getEmpresasForTable(), "\n--- 🏢 Empresas ---");
-  printTable(await db.getFuncionariosForTable(), "\n--- 👷 Funcionários ---");
-  printTable(await db.getLocaisForTable(), "\n--- 📍 Locais ---");
-  printTable(await db.getDispositivosForTable(), "\n--- 📱 Dispositivos ---");
-  printTable(
-      await db.getLeiturasForTable(10), "\n--- ⚡️ Últimas 10 Leituras ---");
-
-  print("\n--- Fim do Resumo ---");
-  print("Pressione Enter para continuar...");
-  stdin.readLineSync();
 }
 
-Future<void> checkConexoes() async {
-  print("\n🔍 Verificando conexões...");
+Future<void> adicionarFuncionario() async {
+  final empresas = await db.getEmpresas();
 
-  try {
-    await db.getEmpresas();
-    print("✅ MySQL: OK (Conexão estabelecida)");
-  } catch (e) {
-    print("❌ MySQL: ERRO - $e");
+  if (empresas.isEmpty) {
+    print("Nenhuma empresa encontrada.");
+    return;
   }
 
-  try {
-    if (!firebase.conectado) {
-      print("⚠️  Firebase: Não conectado. Conectando...");
-      await firebase.connect();
+  await listarTabelaCLI(empresas, "📋 Empresas disponíveis:");
+
+  final nome = prompt("Nome: ");
+  final email = prompt("Email: ");
+  final senha = prompt("Senha: ");
+  final idEmpresa = promptInt("ID Empresa: ");
+
+  print(await db.addFuncionario(nome, email, senha, idEmpresa));
+}
+
+Future<void> menuLocais() async {
+  bool running = true;
+
+  while (running) {
+    print("\n--- 📍 Locais ---");
+    print("1. Adicionar");
+    print("2. Listar");
+    print("3. Deletar");
+    print("0. Voltar");
+
+    final op = prompt("Escolha: ");
+
+    switch (op) {
+      case '1':
+        await adicionarLocal();
+        break;
+
+      case '2':
+        await listarTabelaCLI(await db.getLocais(), "📋 Locais");
+        break;
+
+      case '3':
+        final id = promptInt("ID: ");
+        await db.deleteLocal(id);
+        print("Local deletado.");
+        await listarTabelaCLI(await db.getLocais(), "📋 Locais");
+        break;
+
+      case '0':
+        running = false;
+        break;
+
+      default:
+        print("Opção inválida.");
     }
-    print("✅ Firebase: OK (Conexão estabelecida)");
-  } catch (e) {
-    print("❌ Firebase: ERRO - $e");
+  }
+}
+
+Future<void> adicionarLocal() async {
+  final empresas = await db.getEmpresas();
+
+  if (empresas.isEmpty) {
+    print("Nenhuma empresa cadastrada.");
+    return;
   }
 
-  print("Verificação de conexões concluída.");
+  await listarTabelaCLI(empresas, "📋 Empresas disponíveis:");
+
+  final nome = prompt("Nome do local: ");
+  final ref = prompt("Referência: ");
+  final idEmp = promptInt("ID Empresa: ");
+
+  print(await db.addLocal(nome, ref, idEmp));
+}
+
+Future<void> menuDispositivos() async {
+  bool running = true;
+
+  while (running) {
+    print("\n--- 📱 Dispositivos ---");
+    print("1. Adicionar");
+    print("2. Listar");
+    print("3. Deletar");
+    print("0. Voltar");
+
+    final op = prompt("Escolha: ");
+
+    switch (op) {
+      case '1':
+        await adicionarDispositivo();
+        break;
+
+      case '2':
+        await listarTabelaCLI(await db.getDispositivos(), "📋 Dispositivos");
+        break;
+
+      case '3':
+        final id = promptInt("ID: ");
+        await db.deleteDispositivo(id);
+        print("Dispositivo deletado.");
+        await listarTabelaCLI(await db.getDispositivos(), "📋 Dispositivos");
+        break;
+
+      case '0':
+        running = false;
+        break;
+
+      default:
+        print("Opção inválida.");
+    }
+  }
+}
+
+Future<void> adicionarDispositivo() async {
+  final locais = await db.getLocais();
+
+  if (locais.isEmpty) {
+    print("Nenhum local registrado.");
+    return;
+  }
+
+  await listarTabelaCLI(locais, "📋 Locais disponíveis:");
+
+  final modelo = prompt("Modelo: ");
+  final status = prompt("Status: ");
+  final idLocal = promptInt("ID Local: ");
+
+  print(await db.addDispositivo(modelo, status, idLocal));
 }
 
 // ---------------------- MENU PRINCIPAL ----------------------
-
 Future<void> main() async {
   try {
     await db.connect();
   } catch (e) {
-    print("ERRO FATAL: Não foi possível conectar ao banco de dados.");
+    print("❌ ERRO ao conectar ao MySQL.");
     print(e);
     return;
   }
 
+  // 🔄 Sincronização completa automática
+  await sincronizarTudo();
+
   bool running = true;
+
   while (running) {
-    print("\n--- ⚡️ Sistema de Gestão PowerKeeper (MySQL) ---");
-    print("1. Gerenciar Empresas");
-    print("2. Gerenciar Funcionários");
-    print("3. Gerenciar Locais");
-    print("4. Gerenciar Dispositivos");
-    print("5. Sincronizar / Listar");
+    print("\n--- ⚡ PowerKeeper CLI ---");
+    print("1. Empresas");
+    print("2. Funcionários");
+    print("3. Locais");
+    print("4. Dispositivos");
+    print("5. Sincronização");
     print("0. Sair");
 
-    final choice = prompt("Escolha uma opção: ");
+    final op = prompt("Escolha: ");
 
-    switch (choice) {
+    switch (op) {
       case '1':
         await menuEmpresas();
         break;
@@ -192,234 +423,10 @@ Future<void> main() async {
         running = false;
         break;
       default:
-        print("Opção inválida!");
+        print("Opção inválida.");
     }
   }
 
   await db.close();
-  firebase.close();
-  print("Saindo...");
-}
-
-// ---------------------- MENUS AUXILIARES ----------------------
-
-Future<void> menuEmpresas() async {
-  bool running = true;
-  while (running) {
-    print("\n--- 🏢 Gerenciar Empresas ---");
-    print("1. Adicionar Empresa");
-    print("2. Listar Empresas");
-    print("3. Deletar Empresa");
-    print("0. Voltar ao Menu Principal");
-
-    final choice = prompt("Escolha uma opção: ");
-    switch (choice) {
-      case '1':
-        final nome = prompt("Nome da empresa: ");
-        final cnpj = prompt("CNPJ da empresa: ");
-        await db.addEmpresa(nome, cnpj);
-        print("Empresa '$nome' adicionada com sucesso!");
-        break;
-      case '2':
-        print("\n--- Lista de Empresas ---");
-        final empresas = await db.getEmpresas();
-        empresas.isEmpty
-            ? print("Nenhuma empresa cadastrada.")
-            : empresas.forEach(print);
-        break;
-      case '3':
-        final id = promptInt("ID da empresa a deletar: ");
-        await db.deleteEmpresa(id);
-        print("Empresa com ID $id (e dados relacionados) deletada.");
-        break;
-      case '0':
-        running = false;
-        break;
-      default:
-        print("Opção inválida!");
-    }
-  }
-}
-
-Future<void> menuFuncionarios() async {
-  bool running = true;
-  while (running) {
-    print("\n--- 👷 Gerenciar Funcionários ---");
-    print("1. Adicionar Funcionário");
-    print("2. Listar Funcionários");
-    print("3. Deletar Funcionário");
-    print("0. Voltar ao Menu Principal");
-
-    final choice = prompt("Escolha uma opção: ");
-    switch (choice) {
-      case '1':
-        await _adicionarFuncionario();
-        break;
-      case '2':
-        print("\n--- Lista de Funcionários ---");
-        final funcionarios = await db.getFuncionarios();
-        funcionarios.isEmpty
-            ? print("Nenhum funcionário cadastrado.")
-            : funcionarios.forEach(print);
-        break;
-      case '3':
-        final id = promptInt("ID do funcionário a deletar: ");
-        await db.deleteFuncionario(id);
-        print("Funcionário com ID $id deletado.");
-        break;
-      case '0':
-        running = false;
-        break;
-      default:
-        print("Opção inválida!");
-    }
-  }
-}
-
-Future<void> _adicionarFuncionario() async {
-  print("\n--- Empresas Disponíveis ---");
-  final empresas = await db.getEmpresas();
-  if (empresas.isEmpty) {
-    print("Nenhuma empresa cadastrada. Adicione uma empresa primeiro.");
-    return;
-  }
-  empresas.forEach(print);
-
-  final nome = prompt("Nome do funcionário: ");
-  final email = prompt("Email: ");
-  final senha = prompt("Senha: ");
-  final idEmpresa = promptInt("ID da Empresa do funcionário: ");
-
-  final resultado = await db.addFuncionario(nome, email, senha, idEmpresa);
-  print(resultado);
-}
-
-Future<void> menuLocais() async {
-  bool running = true;
-  while (running) {
-    print("\n--- 📍 Gerenciar Locais ---");
-    print("1. Adicionar Local");
-    print("2. Listar Locais");
-    print("3. Deletar Local");
-    print("0. Voltar ao Menu Principal");
-
-    final choice = prompt("Escolha uma opção: ");
-    switch (choice) {
-      case '1':
-        await _adicionarLocal();
-        break;
-      case '2':
-        final locais = await db.getLocais();
-        locais.isEmpty
-            ? print("Nenhum local cadastrado.")
-            : locais.forEach(print);
-        break;
-      case '3':
-        final id = promptInt("ID do local a deletar: ");
-        await db.deleteLocal(id);
-        print("Local (e dispositivos relacionados) com ID $id deletado.");
-        break;
-      case '0':
-        running = false;
-        break;
-      default:
-        print("Opção inválida!");
-    }
-  }
-}
-
-Future<void> _adicionarLocal() async {
-  final empresas = await db.getEmpresas();
-  if (empresas.isEmpty) {
-    print("Nenhuma empresa cadastrada. Adicione uma empresa primeiro.");
-    return;
-  }
-  empresas.forEach(print);
-
-  final nome = prompt("Nome do local: ");
-  final referencia = prompt("Referência: ");
-  final idEmpresa = promptInt("ID da Empresa do local: ");
-
-  final resultado = await db.addLocal(nome, referencia, idEmpresa);
-  print(resultado);
-}
-
-Future<void> menuDispositivos() async {
-  bool running = true;
-  while (running) {
-    print("\n--- 📱 Gerenciar Dispositivos ---");
-    print("1. Adicionar Dispositivo");
-    print("2. Listar Dispositivos");
-    print("3. Deletar Dispositivo");
-    print("0. Voltar ao Menu Principal");
-
-    final choice = prompt("Escolha uma opção: ");
-    switch (choice) {
-      case '1':
-        await _adicionarDispositivo();
-        break;
-      case '2':
-        final dispositivos = await db.getDispositivos();
-        dispositivos.isEmpty
-            ? print("Nenhum dispositivo cadastrado.")
-            : dispositivos.forEach(print);
-        break;
-      case '3':
-        final id = promptInt("ID do dispositivo a deletar: ");
-        await db.deleteDispositivo(id);
-        print("Dispositivo com ID $id deletado.");
-        break;
-      case '0':
-        running = false;
-        break;
-      default:
-        print("Opção inválida!");
-    }
-  }
-}
-
-Future<void> _adicionarDispositivo() async {
-  final locais = await db.getLocais();
-  if (locais.isEmpty) {
-    print("Nenhum local cadastrado. Adicione um local primeiro.");
-    return;
-  }
-  locais.forEach(print);
-
-  final modelo = prompt("Modelo do dispositivo: ");
-  final status = prompt("Status inicial: ");
-  final idLocal = promptInt("ID do Local do dispositivo: ");
-
-  final resultado = await db.addDispositivo(modelo, status, idLocal);
-  print(resultado);
-}
-
-// MENU DE SINCRONIZAÇÃO
-Future<void> menuSincronizacao() async {
-  bool running = true;
-  while (running) {
-    print("\n--- 🔄 Sincronizar / Listar ---");
-    print("1. Sincronizar Firebase → MySQL");
-    print("2. Listar Resumo do MySQL (Tabela)");
-    print("3. Verificar Conexões");
-    print("0. Voltar ao Menu Principal");
-
-    final choice = prompt("Escolha uma opção: ");
-    switch (choice) {
-      case '1':
-        await syncFirebase();
-        break;
-      case '2':
-        await listarTudoMySQL();
-        break;
-      case '3':
-        await checkConexoes();
-        break;
-      case '0':
-        running = false;
-        break;
-      default:
-        print("Opção inválida!");
-    }
-  }
+  print("Encerrado.");
 }
