@@ -21,6 +21,40 @@ class DatabaseService {
     db: 'powerkeeper',
   );
 
+  // ⚡ FUNÇÃO CORRIGIDA ⚡
+  Future<List<Map<String, dynamic>>> getConsumosDiarios() async {
+    print("🔍 Buscando todos os Consumos Diários no banco local...");
+
+    final List<Map<String, dynamic>> consumos = [];
+
+    try {
+      final conn = await _getValidConnection();
+
+      // ⬅️ CORREÇÃO NA CONSULTA: Usando 'idLeitura', 'consumoKWh' e 'dispositivo_idDispositivo'
+      // O campo 'firebaseKey' não aparece na sua tabela, então vamos removê-lo do SELECT
+      // e do mapeamento, e usar a chave primária 'idLeitura' no lugar.
+      final results = await conn.query(
+          'SELECT idLeitura, dispositivo_idDispositivo, consumoKWh, timeStamp FROM consumoDiario ORDER BY timeStamp DESC');
+
+      for (final row in results) {
+        consumos.add({
+          // ⬅️ CORREÇÃO NO MAPEAMENTO: A ordem dos índices (0, 1, 2, 3) deve seguir o SELECT acima
+          'idLeitura': row[0], // Corresponde a idLeitura
+          'dispositivoId': row[1], // Corresponde a dispositivo_idDispositivo
+          'consumoKwh': row[2], // Corresponde a consumoKWh
+          'timeStamp': row[3].toString(), // Corresponde a timeStamp
+          // 'firebaseKey': row[4], // Removido, pois não está no SELECT
+        });
+      }
+
+      print("✅ ${consumos.length} registros de Consumo Diário encontrados.");
+      return consumos;
+    } catch (e) {
+      print("❌ ERRO ao listar Consumos Diários: $e");
+      return [];
+    }
+  }
+
   // -----------------------------
   // CONECTAR
   // -----------------------------
@@ -103,16 +137,21 @@ class DatabaseService {
     final conn = await _getValidConnection();
     try {
       final result = await conn.query('''
-        INSERT INTO consumoDiario (timeStamp, consumoKWh, dispositivo_idDispositivo)
-        VALUES (?, ?, ?)
+        INSERT INTO consumoDiario (timeStamp, consumoKwh, dispositivo_idDispositivo, firebaseKey)
+        VALUES (?, ?, ?, ?)
       ''', [
         c.timeStamp.toUtc(),
         c.consumoKwh,
         c.dispositivoId,
+        c.firebaseKey, // Adicionei o firebaseKey aqui para ser inserido junto
       ]);
       print("Rows inseridas em consumoDiario: ${result.affectedRows}");
       return "sucesso";
     } catch (e) {
+      // Tentativa de lidar com duplicidade de forma mais específica, se houver constraint
+      if (e.toString().contains('Duplicate entry')) {
+        return "aviso: Duplicate entry";
+      }
       return "Erro ao inserir consumo diário: $e";
     }
   }
@@ -146,14 +185,52 @@ class DatabaseService {
   }
 
   Future<String> deleteEmpresa(int id) async {
+    final conn = await _getValidConnection();
+
+    // Usando uma transação para garantir que TODAS as deleções sejam feitas ou nenhuma
     try {
-      final conn = await _getValidConnection();
-      final result =
-          await conn.query('DELETE FROM empresa WHERE idEmpresa=?', [id]);
-      print("Rows deletadas em empresa: ${result.affectedRows}");
+      await conn.transaction((conn) async {
+        // 1. Deleta registros dependentes em 'funcionario' (necessário pelo erro 1451)
+        final deleteFuncionario = await conn
+            .query('DELETE FROM funcionario WHERE empresa_idEmpresa = ?', [id]);
+        print(
+            "Rows deletadas em funcionario (dependentes da Empresa $id): ${deleteFuncionario.affectedRows}");
+
+        // 2. Deleta registros dependentes em 'local' (assumindo a dependência da sua mensagem de aviso)
+        // *AVISO: Se 'local' tiver dependências (como 'dispositivo'), esta deleção pode falhar
+        // e você precisará deletar as dependências de 'local' primeiro.*
+        final deleteLocal = await conn
+            .query('DELETE FROM local WHERE empresa_idEmpresa = ?', [id]);
+        print(
+            "Rows deletadas em local (dependentes da Empresa $id): ${deleteLocal.affectedRows}");
+
+        // 3. Deleta o registro principal em 'empresa'
+        final deleteEmpresaResult =
+            await conn.query('DELETE FROM empresa WHERE idEmpresa = ?', [id]);
+
+        if (deleteEmpresaResult.affectedRows == 0) {
+          throw Exception("Empresa com ID $id não encontrada para deleção.");
+        }
+
+        print("Rows deletadas em empresa: ${deleteEmpresaResult.affectedRows}");
+      });
+
       return "ok";
     } catch (e) {
+      // Captura qualquer erro na transação
       return "Erro ao deletar empresa: $e";
+    }
+  }
+
+  Future<String> deleteConsumoDiario(int idLeitura) async {
+    try {
+      final conn = await _getValidConnection();
+      final result = await conn
+          .query('DELETE FROM consumoDiario WHERE idLeitura=?', [idLeitura]);
+      print("Rows deletadas em consumoDiario: ${result.affectedRows}");
+      return "ok";
+    } catch (e) {
+      return "Erro ao deletar consumoDiario: $e";
     }
   }
 
@@ -194,13 +271,35 @@ class DatabaseService {
   }
 
   Future<String> deleteFuncionario(int id) async {
+    final conn = await _getValidConnection();
+
+    // Usando uma transação para garantir que ambas as deleções sejam feitas ou nenhuma
     try {
-      final conn = await _getValidConnection();
-      final result = await conn
-          .query('DELETE FROM funcionario WHERE idFuncionario = ?', [id]);
-      print("Rows deletadas em funcionario: ${result.affectedRows}");
+      await conn.transaction((conn) async {
+        // 1. Deleta registros dependentes em 'analisa' (para resolver o Erro 1451)
+        final deleteAnalisa = await conn
+            .query('DELETE FROM analisa WHERE usuario_idUsuario = ?', [id]);
+        print(
+            "Rows deletadas em analisa (dependentes do Funcionario $id): ${deleteAnalisa.affectedRows}");
+
+        // 2. Deleta o registro principal em 'funcionario'
+        final deleteFuncionario = await conn
+            .query('DELETE FROM funcionario WHERE idFuncionario = ?', [id]);
+
+        if (deleteFuncionario.affectedRows == 0) {
+          // Se a deleção do funcionário não afetou linhas, a transação será abortada se for lançado um erro.
+          // Neste caso, retornamos uma mensagem de aviso.
+          throw Exception(
+              "Funcionário com ID $id não encontrado para deleção.");
+        }
+
+        print(
+            "Rows deletadas em funcionario: ${deleteFuncionario.affectedRows}");
+      });
+
       return "ok";
     } catch (e) {
+      // Captura qualquer erro na transação (incluindo o que jogamos acima)
       return "Erro ao deletar funcionario: $e";
     }
   }
@@ -274,7 +373,7 @@ class DatabaseService {
     final conn = await _getValidConnection();
     final r = await conn.query('''
       SELECT dispositivo.idDispositivo, dispositivo.modelo, dispositivo.status,
-             local.nome AS local, empresa.nome AS empresa
+            local.nome AS local, empresa.nome AS empresa
       FROM dispositivo
       JOIN local ON dispositivo.local_idLocal = local.idLocal
       JOIN empresa ON local.empresa_idEmpresa = empresa.idEmpresa
@@ -292,13 +391,40 @@ class DatabaseService {
   }
 
   Future<String> deleteDispositivo(int id) async {
+    final conn = await _getValidConnection();
+
+    // Usando uma transação para garantir que TODAS as deleções sejam feitas ou nenhuma
     try {
-      final conn = await _getValidConnection();
-      final result = await conn
-          .query("DELETE FROM dispositivo WHERE idDispositivo=?", [id]);
-      print("Rows deletadas em dispositivo: ${result.affectedRows}");
+      await conn.transaction((conn) async {
+        // 1. Deleta registros dependentes em 'consumodiario'
+        final deleteConsumo = await conn.query(
+            'DELETE FROM consumodiario WHERE dispositivo_idDispositivo = ?',
+            [id]);
+        print(
+            "Rows deletadas em consumodiario (dependentes do Dispositivo $id): ${deleteConsumo.affectedRows}");
+
+        // 2. NOVO PASSO: Deleta registros dependentes em 'analisa' (resolve o Erro 1451 atual)
+        final deleteAnalisa = await conn.query(
+            'DELETE FROM analisa WHERE dispositivo_idDispositivo = ?', [id]);
+        print(
+            "Rows deletadas em analisa (dependentes do Dispositivo $id): ${deleteAnalisa.affectedRows}");
+
+        // 3. Deleta o registro principal em 'dispositivo'
+        final deleteDispositivoResult = await conn
+            .query("DELETE FROM dispositivo WHERE idDispositivo=?", [id]);
+
+        if (deleteDispositivoResult.affectedRows == 0) {
+          throw Exception(
+              "Dispositivo com ID $id não encontrado para deleção.");
+        }
+
+        print(
+            "Rows deletadas em dispositivo: ${deleteDispositivoResult.affectedRows}");
+      });
+
       return "ok";
     } catch (e) {
+      // Captura qualquer erro na transação
       return "Erro ao deletar dispositivo: $e";
     }
   }
@@ -312,7 +438,7 @@ class DatabaseService {
     print("=" * 50);
     for (var e in dados) {
       print(
-          "ID: ${e['idEmpresa']}  |  Nome: ${e['nome']}  |  CNPJ: ${e['cnpj']}");
+          "ID: ${e['idEmpresa']}  |  Nome: ${e['nome']}  |  CNPJ: ${e['cnpj']}");
     }
   }
 

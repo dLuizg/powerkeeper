@@ -106,4 +106,6 @@ class ConsumoDiario {
       timeStamp: timeStamp,
     );
   }
+  
 }
+
