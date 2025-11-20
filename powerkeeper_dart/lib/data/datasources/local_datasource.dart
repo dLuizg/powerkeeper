@@ -1,10 +1,9 @@
 import 'package:mysql1/mysql1.dart';
 import '../../core/exceptions/database_exceptions.dart';
-import '../../domain/entities/domain_entities.dart';
 
 abstract class ILocalDataSource {
-  Future<MySqlConnection> get connection;
-  Future<void> close();
+  Future<MySqlConnection> getConnection();
+  Future<void> closeConnection();
 }
 
 class LocalDataSource implements ILocalDataSource {
@@ -27,13 +26,15 @@ class LocalDataSource implements ILocalDataSource {
         );
 
   @override
-  Future<MySqlConnection> get connection async {
+  Future<MySqlConnection> getConnection() async {
     if (_connection == null || !_isConnected) {
       await _connect();
     } else {
       try {
+        // Testa se a conexão ainda está válida
         await _connection!.query('SELECT 1');
       } catch (_) {
+        // Reconecta se a conexão foi fechada
         await _connect();
       }
     }
@@ -45,6 +46,7 @@ class LocalDataSource implements ILocalDataSource {
       await _connection?.close();
       _connection = await MySqlConnection.connect(_settings);
       _isConnected = true;
+      print('✅ Conectado ao MySQL com sucesso!');
     } catch (e) {
       _isConnected = false;
       throw ConnectionException(
@@ -55,9 +57,10 @@ class LocalDataSource implements ILocalDataSource {
   }
 
   @override
-  Future<void> close() async {
+  Future<void> closeConnection() async {
     await _connection?.close();
     _isConnected = false;
     _connection = null;
+    print('🔌 Conexão MySQL fechada.');
   }
 }
