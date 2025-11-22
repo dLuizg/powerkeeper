@@ -72,23 +72,24 @@ class FirebaseService {
   /// Marca um consumo diário como sincronizado
   Future<void> marcarConsumoComoSincronizado(String dataKey) async {
     if (!_conectado || _client == null || _accessToken == null) return;
-
+    // LINHA 76: Variável 'url' definida
     final url = Uri.parse(
         '$_databaseUrl/consumos_diarios/$dataKey/sincronizado.json?auth=$_accessToken');
-
     try {
+      // Linha seguinte: Variável 'url' usada no put()
       final response = await _client!.put(
-        url,
+        url, // AQUI ESTÁ SENDO USADA
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(true),
       );
 
+      // Se você quiser tratar o status code:
       if (response.statusCode != 200) {
         print(
-            "❌ Erro ao marcar consumo $dataKey como sincronizado: Status ${response.statusCode}");
+            "❌ Erro ao marcar consumo $dataKey: Status ${response.statusCode}");
       }
     } catch (e) {
-      print("❌ Erro ao marcar consumo $dataKey como sincronizado: $e");
+      print("❌ Erro ao enviar PUT para Firebase: $e");
     }
   }
 

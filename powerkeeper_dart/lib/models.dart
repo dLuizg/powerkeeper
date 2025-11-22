@@ -1,7 +1,7 @@
 // lib/models.dart
 
 // A classe 'intl' não é estritamente necessária aqui, mas foi mantida por estar no original.
-// import 'package:intl/intl.dart'; 
+// import 'package:intl/intl.dart';
 
 // ---------------------- CLASSE LEITURA (Revisada e Segura) ----------------------
 
@@ -19,7 +19,7 @@ class Leitura {
     required this.tensao,
     required this.dispositivoId,
   });
-  
+
   // Construtor fromJson/fromRtdb seguro para lidar com nulos
   factory Leitura.fromRtdb(Map<String, dynamic> json, String docId) {
     final rawTimestamp = json['timestamp'];
@@ -30,15 +30,15 @@ class Leitura {
       try {
         timeStamp = DateTime.parse(rawTimestamp);
       } catch (e) {
-        timeStamp = DateTime.now(); 
+        timeStamp = DateTime.now();
       }
     } else {
       timeStamp = DateTime.now();
     }
-    
+
     return Leitura(
-      firebaseDocId: docId, 
-      timeStamp: timeStamp, 
+      firebaseDocId: docId,
+      timeStamp: timeStamp,
       // Usando operadores null-aware para segurança
       corrente: (json['corrente'] as num?)?.toDouble() ?? 0.0,
       tensao: (json['tensao'] as num?)?.toDouble() ?? 0.0,
@@ -51,7 +51,7 @@ class Leitura {
 
 class ConsumoDiario {
   // NOVO CAMPO: Chave do Firebase (a data, ex: "2025-11-19") para marcar como sincronizado.
-  final String firebaseKey; 
+  final String firebaseKey;
   final double consumoKwh;
   final int dispositivoId; // Mapeia para dispositivo_idDispositivo
   final DateTime timeStamp;
@@ -83,17 +83,20 @@ class ConsumoDiario {
     final dispositivoId = json['idDispositivo'] as int?;
 
     // 3. Tratamento para 'timestamp' (que é uma String formatada: "2025-11-20 00:55:48")
-    final rawTimestamp = json['timestamp'];
     DateTime timeStamp;
+    final rawTimestamp = json['timestamp'];
 
     if (rawTimestamp is String) {
-      try {
-        // Usa DateTime.parse para converter a string 'AAAA-MM-DD HH:mm:ss'
-        timeStamp = DateTime.parse(rawTimestamp);
-      } catch (e) {
-        timeStamp = DateTime.now();
-        print(
-            "Aviso: Falha ao parsear String de timestamp: $rawTimestamp. Usando data/hora atual.");
+      // 🎯 Prioriza e usa tryParse para o formato de string ISO 8601 do Firebase
+      timeStamp = DateTime.tryParse(rawTimestamp) ?? DateTime.now();
+    } else if (rawTimestamp is int) {
+      // Deixa a lógica de int como fallback, caso o formato mude no futuro.
+      // Já que é um número baixo (ex: 6), pode ser um erro no dado.
+      // MANTENDO A LÓGICA DE SEGUNDOS, POR SEGURANÇA, SE FOR UM ERRO DE FORMATO NO FIREBASE
+      if (rawTimestamp.toString().length < 13) {
+        timeStamp = DateTime.fromMillisecondsSinceEpoch(rawTimestamp * 1000);
+      } else {
+        timeStamp = DateTime.fromMillisecondsSinceEpoch(rawTimestamp);
       }
     } else {
       timeStamp = DateTime.now();
@@ -106,6 +109,4 @@ class ConsumoDiario {
       timeStamp: timeStamp,
     );
   }
-  
 }
-
